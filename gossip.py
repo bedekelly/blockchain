@@ -10,6 +10,7 @@ from contextlib import ExitStack
 HOST = "0.0.0.0"
 PORT = 1234 if"--gen" in sys.argv else random.randint(1025, 9999)
 URLS = set()
+PEER = None
 
 _print = print
 def print(*args, **kwargs):
@@ -34,6 +35,8 @@ async def server(websocket, path):
         await websocket.send(json.dumps({"pong": True}))
     elif 'msg' in data:
         print("Got message:", data['msg'])
+    else:
+        PEER.consume_message(data)
 
 
 async def propagate(peer):
@@ -44,6 +47,16 @@ async def propagate(peer):
             async with websockets.connect(url) as connection:
                 await connection.send(json.dumps({"peer": peer}))
 
+
+async def send_to_all(data):
+    """Send arbitrary data to all connected peers."""
+
+
+    for url in list(URLS):
+        print(f"Sending data {data} to {url}")
+        async with websockets.connect(url) as connection:
+            await connection.send(json.dumps(data))
+                
             
 async def add_peer(url):
     """Add a peer, provided it's online."""
@@ -129,31 +142,25 @@ def send_hello_to_peers():
             except ConnectionRefusedError as e:
                 # Remove any peers which don't respond.
                 print("Connection refused; "
-                      "couldn't send hello to peer.", url, e)b
+                      "couldn't send hello to peer.", url, e)
                 URLS.remove(url)
         import time; time.sleep(5)
     
 
-def initialise():
+def start_server(Peer):
     global URLS
+    global PEER
+    PEER = Peer(send_to_all)
     URLS = set(load_initial_urls())-set([f"ws://{HOST}:{PORT}"])
-    start_server = websockets.serve(server, HOST, PORT)
 
+    # Start up the websocket server and request peer updates.
+    start_server = websockets.serve(server, HOST, PORT)
     asyncio.get_event_loop().run_until_complete(start_server)
     asyncio.get_event_loop().run_until_complete(update_peers())
     
     # Start worker thread here for mining etc.
-    print("Thread starting: peers are:", URLS)
-    t = Thread(target=send_hello_to_peers, daemon=True)
-    t.start()
+    PEER.start_worker()
 
+    # Start websocket server here to respond to questions.
     print(f"Listening on port {PORT}")
     asyncio.get_event_loop().run_forever()
-    t.join()
-
-
-if __name__ == "__main__":
-    try:
-        initialise()
-    except KeyboardInterrupt:
-        print("Killed.")
