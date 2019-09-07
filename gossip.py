@@ -11,8 +11,14 @@ HOST = "0.0.0.0"
 PORT = 1234 if"--gen" in sys.argv else random.randint(1025, 9999)
 URLS = set()
 
+_print = print
+def print(*args, **kwargs):
+    """Print out logs prepended with the port number."""
+    return _print(f"[{PORT}]", *args, **kwargs)
+
 
 async def server(websocket, path):
+    """Respond to incoming websocket connections."""
     raw_data = await websocket.recv()
     data = json.loads(raw_data)
     if 'peer' in data:
@@ -31,7 +37,8 @@ async def server(websocket, path):
 
 
 async def propagate(peer):
-    for url in iter(URLS):
+    """Send this new peer to our other peers."""
+    for url in list(URLS):
         if peer != url:
             print(f"Sending {peer} to {url}")
             async with websockets.connect(url) as connection:
@@ -39,6 +46,7 @@ async def propagate(peer):
 
             
 async def add_peer(url):
+    """Add a peer, provided it's online."""
     if HOST in url and str(PORT) in url:
         # Don't bother connecting to ourselves!
         return
@@ -47,21 +55,22 @@ async def add_peer(url):
         async with websockets.connect(url) as connection:
             await connection.send(json.dumps({"ping": True}))
             data = json.loads(await connection.recv())
-            print("Got data from peer", url, data)
             if "pong" in data:
+                print("Added new peer:", url)
                 URLS.add(url)
     except Exception as e:
         print(e)
 
     
 async def add_peers(urls):
-    "Add all currently-alive peers to our list of connections."
+    """Add all online peers to our list of connections."""
     for url in urls:
-        if url not in iter(URLS):
+        if url not in list(URLS):
             await add_peer(url)
                
 
 def new_client_msg():
+    """Format the message to be sent when connecting afresh."""
     return json.dumps({
         "peer": f"ws://{HOST}:{PORT}",
         "list_peers": True
@@ -73,14 +82,24 @@ def get_random_peer():
 
     
 async def update_peers():
-    try:
-        peer = get_random_peer()
-        async with websockets.connect(peer) as connection:
-            await connection.send(new_client_msg())
-            data = json.loads(await connection.recv())
-            await add_peers(data["peers"])
-    except IndexError:
-        print("Genesis node doesn't have any peers. (OK)")
+    """Update our list of peers from another random peer."""
+    updated = False
+    while not updated:
+        try:
+            peer = get_random_peer()
+            async with websockets.connect(peer) as connection:
+                await connection.send(new_client_msg())
+                data = json.loads(await connection.recv())
+                await add_peers(data["peers"])
+            updated = True
+        except IndexError as e:
+            if "--gen" not in sys.argv:
+                raise e
+            print("Genesis node doesn't have any peers. (OK)")
+            updated = True
+        except ConnectionRefusedError as e:
+            print(f"Couldn't update from {peer}; removing.")
+            URLS.remove(peer)
         
     
 def load_initial_urls():
@@ -89,19 +108,29 @@ def load_initial_urls():
 
 
 async def send_hello(url):
+    """Connect to a peer and send a "hello" message."""
     async with websockets.connect(url) as connection:
         msg = json.dumps({"msg": f"Hello from port {PORT}!"})
         await connection.send(msg)
 
 
 def send_hello_to_peers():
+    """Send a "hello" message to each connected peer."""
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
     while True:
-        for url in URLS:
-            asyncio.get_event_loop().run_until_complete(send_hello(url))
+        urls = list(URLS)  # Prevent set changing size.
+        print("Sending hello to urls:", urls)
+        for url in urls:
+            try:
+                asyncio.get_event_loop().run_until_complete(
+                    send_hello(url))
+            except ConnectionRefusedError as e:
+                # Remove any peers which don't respond.
+                print("Connection refused; "
+                      "couldn't send hello to peer.", url, e)b
+                URLS.remove(url)
         import time; time.sleep(5)
     
 
@@ -109,7 +138,6 @@ def initialise():
     global URLS
     URLS = set(load_initial_urls())-set([f"ws://{HOST}:{PORT}"])
     start_server = websockets.serve(server, HOST, PORT)
-    print(URLS)
 
     asyncio.get_event_loop().run_until_complete(start_server)
     asyncio.get_event_loop().run_until_complete(update_peers())
@@ -125,6 +153,7 @@ def initialise():
 
 
 if __name__ == "__main__":
-    initialise()
-
-
+    try:
+        initialise()
+    except KeyboardInterrupt:
+        print("Killed.")
