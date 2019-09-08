@@ -34,8 +34,6 @@ async def server(websocket, path):
             await websocket.send(msg)
     elif 'ping' in data:
         await websocket.send(repr({"pong": True}))
-    elif 'msg' in data:
-        print("Got message:", data['msg'])
     else:
         reply = PEER.consume_message(data)
         if reply:

@@ -79,13 +79,12 @@ class Miner(Peer):
     def update_blockchain(self, response):
         blocks = response['blocks']
 
-        # Save the old blockchain.
-        old_blocks = self.blocks
         # First, iterate through the blocks and get a set of
         # unspent transaction outputs.
         for block in blocks:
             self.update_unspent_transactions_with_block(block)
-
+        self.print_unspent()
+        
         # Todo: compare blockchains to choose the longer one.
         self.blocks = blocks
         print("Updated blockchain.")
@@ -97,36 +96,48 @@ class Miner(Peer):
         transactions = block['transactions']
         update_unspent_transactions(unspent, transactions)
         self.unspent_transactions.update(unspent)
+        self.print_unspent()
+
+    def handle_transactions_msg(data):
+        valid = self.validate_transactions_message(data)
+        if not valid:
+            return
+        for transaction in data:
+            self.update_transactions(transaction)
+            # Todo: propagate valid transactions
+
+    def handle_block_msg(block):
+        if self.hash_complete(msg["block"]):
+            # Todo: fork resolution
+            self.new_block(msg["block"])
+            self.got_new_block = True
+            # Todo: propagate valid blocks.
+        else:
+            print("Wrong hash on msg[\"block\"]")
+            breakpoint()
 
     def consume_message(self, msg):
         """Be a good Peer and respond to messages."""
         if "transactions" in msg:
-            data = msg['transactions']
-            valid = self.validate_transactions_message(data)
-            if valid:
-                for transaction in data:
-                    self.update_transactions(transaction)
-                # Todo: propagate valid transactions.
+            self.handle_transactions_msg(msg['transactions'])
         elif "request_blockchain" in msg:
             return {"blocks": self.blocks}
         elif "block" in msg:
-            if self.hash_complete(msg["block"]):
-                self.new_block(msg["block"])
-                self.got_new_block = True
-                # Todo: propagate valid blocks.
-            else:
-                print("Wrong hash on msg[\"block\"]")
-                breakpoint()
+            self.handle_block_msg(msg['block'])
         else:
             print("Unrecognised msg")
             breakpoint()
 
-
     def print_chain(self):
         length = len(self.blocks)
-        chain = '<-'.join(
-            str(block['hash'])[:5] for block in self.blocks)
-        print(f"[{length}] {chain}") 
+        short_hash = lambda block: str(block['hash'])[:5]
+        short_hashes = map(short_hash, self.blocks)
+        printable_chain = '<-'.join(short_hashes)
+        print(f"[{length}] {printable_chain}") 
+
+    def print_unspent(self):
+        print("Unspent:", list(
+            self.unspent_transactions.values()))
         
     def new_block(self, block):
         self.update_unspent_transactions_with_block(block)
@@ -144,28 +155,32 @@ class Miner(Peer):
                    for t in transactions)
 
     def mine_one_block(self):
-        mining_trx = ("mine", (
-                (uuid().hex, self.mining_reward, self.address),
-            )
-        )
+        # Note: each subkey needs to be hashable.
         block = {
             'transactions': (
                 *self.current_transactions,
-                 mining_trx
+                 ("mine", (
+                     (uuid().hex,
+                      self.mining_reward,
+                      self.address),
+                 ))
             ),
             'timestamp': int(time.time()),
             'previous_block': self.previous_block_hash,
             'nonce': 0
         }
     
-        for i in count():
+        for block['nonce'] in count():
+            # Exit early if we've got a new previous-block.
             if self.got_new_block:
                 self.got_new_block = False
                 return
-            block['nonce'] = i
+
+            # Try to mine a block by incrementing the nonce.
             if self.hash_complete(block):
                 print("Mined new block.")
                 self.new_block(block)
+                # Send our new block to every connected client.
                 asyncio_run(self.send_to_all({"block":block}))
                 break
 
@@ -175,6 +190,7 @@ class Miner(Peer):
             
     @property
     def previous_block_hash(self):
+        """Get the hash of the current last block."""
         if not self.blocks:
             return 0
         return self.blocks[-1]["hash"]
@@ -206,4 +222,6 @@ class Miner(Peer):
     def start_worker(self):
         Thread(target=self.mine, daemon=True).start()
 
-gossip.start_server(Miner)
+
+if __name__ == "__main__":        
+    gossip.start_server(Miner)
