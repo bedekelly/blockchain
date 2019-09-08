@@ -1,5 +1,5 @@
 import sys
-import json
+import ast
 import random
 import asyncio
 import websockets
@@ -12,6 +12,7 @@ PORT = 1234 if"--gen" in sys.argv else random.randint(1025, 9999)
 URLS = set()
 PEER = None
 
+
 _print = print
 def print(*args, **kwargs):
     """Print out logs prepended with the port number."""
@@ -21,22 +22,24 @@ def print(*args, **kwargs):
 async def server(websocket, path):
     """Respond to incoming websocket connections."""
     raw_data = await websocket.recv()
-    data = json.loads(raw_data)
+    data = ast.literal_eval(raw_data)
     if 'peer' in data:
         already_had = data['peer'] == f"ws://{HOST}:{PORT}" \
                       or data['peer'] in URLS
         await add_peer(data['peer'])
-        msg = json.dumps({"peers": list(URLS)})
+        msg = repr({"peers": list(URLS)})
         if not already_had:
             await propagate(data['peer'])
-    if data.get('list_peers', False):
-        await websocket.send(msg)
+        if 'list_peers' in data:
+            await websocket.send(msg)
     elif 'ping' in data:
-        await websocket.send(json.dumps({"pong": True}))
+        await websocket.send(repr({"pong": True}))
     elif 'msg' in data:
         print("Got message:", data['msg'])
     else:
-        PEER.consume_message(data)
+        reply = PEER.consume_message(data)
+        if reply:
+            await websocket.send(repr(reply))
 
 
 async def propagate(peer):
@@ -45,17 +48,14 @@ async def propagate(peer):
         if peer != url:
             print(f"Sending {peer} to {url}")
             async with websockets.connect(url) as connection:
-                await connection.send(json.dumps({"peer": peer}))
+                await connection.send(repr({"peer": peer}))
 
 
 async def send_to_all(data):
     """Send arbitrary data to all connected peers."""
-
-
     for url in list(URLS):
-        print(f"Sending data {data} to {url}")
         async with websockets.connect(url) as connection:
-            await connection.send(json.dumps(data))
+            await connection.send(repr(data))
                 
             
 async def add_peer(url):
@@ -66,8 +66,8 @@ async def add_peer(url):
     try:
         print("Adding new peer:", url)
         async with websockets.connect(url) as connection:
-            await connection.send(json.dumps({"ping": True}))
-            data = json.loads(await connection.recv())
+            await connection.send(repr({"ping": True}))
+            data = ast.literal_eval(await connection.recv())
             if "pong" in data:
                 print("Added new peer:", url)
                 URLS.add(url)
@@ -84,7 +84,7 @@ async def add_peers(urls):
 
 def new_client_msg():
     """Format the message to be sent when connecting afresh."""
-    return json.dumps({
+    return repr({
         "peer": f"ws://{HOST}:{PORT}",
         "list_peers": True
     })
@@ -102,7 +102,7 @@ async def update_peers():
             peer = get_random_peer()
             async with websockets.connect(peer) as connection:
                 await connection.send(new_client_msg())
-                data = json.loads(await connection.recv())
+                data = ast.literal_eval(await connection.recv())
                 await add_peers(data["peers"])
             updated = True
         except IndexError as e:
@@ -123,7 +123,7 @@ def load_initial_urls():
 async def send_hello(url):
     """Connect to a peer and send a "hello" message."""
     async with websockets.connect(url) as connection:
-        msg = json.dumps({"msg": f"Hello from port {PORT}!"})
+        msg = repr({"msg": f"Hello from port {PORT}!"})
         await connection.send(msg)
 
 
@@ -147,11 +147,20 @@ def send_hello_to_peers():
         import time; time.sleep(5)
     
 
+async def request_from_random(request, callback):
+    url = get_random_peer()
+    async with websockets.connect(url) as connection:
+        msg = repr(request)
+        await connection.send(msg)
+        reply = ast.literal_eval(await connection.recv())
+        callback(reply)
+    
+        
 def start_server(Peer):
     global URLS
     global PEER
-    PEER = Peer(send_to_all)
     URLS = set(load_initial_urls())-set([f"ws://{HOST}:{PORT}"])
+    PEER = Peer(send_to_all, request_from_random)
 
     # Start up the websocket server and request peer updates.
     start_server = websockets.serve(server, HOST, PORT)
