@@ -78,9 +78,6 @@ class Miner(Peer):
 
     def update_blockchain(self, response):
         blocks = response['blocks']
-
-        # First, iterate through the blocks and get a set of
-        # unspent transaction outputs.
         for block in blocks:
             self.update_unspent_transactions_with_block(block)
         self.print_unspent()
@@ -92,10 +89,9 @@ class Miner(Peer):
 
     def update_unspent_transactions_with_block(self, block):
         """Update our unspent transactions pool."""
-        unspent = {}
         transactions = block['transactions']
-        update_unspent_transactions(unspent, transactions)
-        self.unspent_transactions.update(unspent)
+        update_unspent_transactions(
+            self.unspent_transactions, transactions)
         self.print_unspent()
 
     def handle_transactions_msg(data):
@@ -169,14 +165,14 @@ class Miner(Peer):
             'previous_block': self.previous_block_hash,
             'nonce': 0
         }
-    
+
+        # Try to mine a block by incrementing the nonce.
         for block['nonce'] in count():
             # Exit early if we've got a new previous-block.
             if self.got_new_block:
                 self.got_new_block = False
                 return
-
-            # Try to mine a block by incrementing the nonce.
+            # Check if we've successfully mined a block.
             if self.hash_complete(block):
                 print("Mined new block.")
                 self.new_block(block)
@@ -186,6 +182,7 @@ class Miner(Peer):
 
     @property
     def address(self):
+        # Todo: this should be a public key.
         return gossip.PORT
             
     @property
