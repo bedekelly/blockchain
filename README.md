@@ -17,6 +17,8 @@ A block is comprised of a timestamp, the hash of the previous node in the blockc
 
 Since a transaction's inputs are expressed as a list of input transaction IDs, and these IDs are guaranteed to be unique, there is no danger of double-spending -- once a transaction's outputs are spent, nodes remove them from the unspent transaction pool and don't recognise any further attempts to spend those coins.
 
+The code for mining is in [`miner.py`](./miner.py).
+
 
 ### Cryptography
 
