@@ -8,7 +8,7 @@ from contextlib import ExitStack
 
 
 HOST = "0.0.0.0"
-PORT = 1234 if"--gen" in sys.argv else random.randint(1025, 9999)
+PORT = 1234 if"--gen" in sys.argv else random.randint(1026, 9999)
 URLS = set()
 PEER = None
 
@@ -167,6 +167,10 @@ def start_server(Peer):
     
     # Start worker thread here for mining etc.
     PEER.start_worker()
+
+    # Start Flask server for private API
+    from private_api import Api
+    Api(PORT+1, None, None).run()
 
     # Start websocket server here to respond to questions.
     print(f"Listening on port {PORT}")

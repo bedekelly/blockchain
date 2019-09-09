@@ -68,7 +68,7 @@ class Miner(Peer):
         self.unspent_transactions = {}
         self.current_transactions = []
         self.blocks = []
-        self._difficulty = 21
+        self._difficulty = 25
         self.got_new_block = False
         if "--gen" not in sys.argv:
             asyncio_run(self.request_from_random(
@@ -143,6 +143,33 @@ class Miner(Peer):
         })
         self.print_chain()
 
+    def add_transaction(self, transaction):
+        # Todo: find a list of inputs for the given amount.
+        # Each input is an unspent transaction whose output
+        # was the address we're using.
+        
+        # Inputs is a list of unspent transaction IDs.
+        # Outputs is a list of (address, amount) pairs.
+        # The outputs plus change should sum to less than
+        # or equal to the inputs.
+        # The difference is added on to the mining trx.
+        
+        transaction = {
+            "inputs": (),
+            "outputs": (),
+            "change": ""
+        }
+
+        # Sign our transaction using our public key.
+        signed_transaction = sign_transaction(transaction)
+
+        # Now we add this to the next block.
+        self.current_transactions.append(signed_transaction)
+
+        # Also keep track of how big our transaction fees are.
+        fee = sum(inputs) - sum(outputs) - change
+        self.transaction_fees += fee
+        
     def validate_transaction(self, transaction):
         breakpoint()
         
@@ -157,6 +184,7 @@ class Miner(Peer):
                 *self.current_transactions,
                  ("mine", (
                      (uuid().hex,
+                      # Todo: mining reward + trx_fees
                       self.mining_reward,
                       self.address),
                  ))
@@ -220,5 +248,5 @@ class Miner(Peer):
         Thread(target=self.mine, daemon=True).start()
 
 
-if __name__ == "__main__":        
+if __name__ == "__main__":
     gossip.start_server(Miner)
