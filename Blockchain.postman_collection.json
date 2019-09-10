@@ -1,0 +1,105 @@
+{
+	"info": {
+		"_postman_id": "5a766b8e-9f99-4c99-ae9b-72ff5a253a84",
+		"name": "Blockchain",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Balances",
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n\t\"fact\": \"There are currently around 40+ known species of whale in existence\",\n\t\"vote\": \"up\"\n}"
+				},
+				"url": {
+					"raw": "http://localhost:1235/balances",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "1235",
+					"path": [
+						"balances"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Add Transaction",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"outputs\": [\n\t{ \"amount\": 900, \"address\": \"1234\" }\n    ],\n    \"fee\": 50\n}\n"
+				},
+				"url": {
+					"raw": "http://localhost:1235/transaction",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "1235",
+					"path": [
+						"transaction"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Unspent",
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n\t\"fact\": \"There are currently around 40+ known species of whale in existence\",\n\t\"vote\": \"up\"\n}"
+				},
+				"url": {
+					"raw": "http://localhost:1235/unspent",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "1235",
+					"path": [
+						"unspent"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
