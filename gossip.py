@@ -1,22 +1,19 @@
-import sys
 import ast
-import random
 import asyncio
-import websockets
-from threading import Thread
-from contextlib import ExitStack
+import random
+import sys
 
+import websockets
+
+from private_api import Api
 
 HOST = "0.0.0.0"
-PORT = 1234 if"--gen" in sys.argv else random.randint(1026, 9999)
-URLS = set()
-PEER = None
+PORT = 1234 if "--gen" in sys.argv else random.randint(1026, 9999)
 
 
-_print = print
-def print(*args, **kwargs):
+def log(*args, **kwargs):
     """Print out logs prepended with the port number."""
-    return _print(f"[{PORT}]", *args, **kwargs)
+    return print(f"[{PORT}]", *args, **kwargs)
 
 
 class Peer:
@@ -32,160 +29,154 @@ class Peer:
         raise NotImplementedError("Peer.consume_message")
 
 
+class Server:
+    def __init__(self, create_worker):
+        self.worker = None
+        self.worker = create_worker(self.send_to_all, self.request_from_random)
+        self.urls = set(self.load_initial_urls()) - {f"ws://{HOST}:{PORT}"}
 
-async def server(websocket, path):
-    """Respond to incoming websocket connections."""
-    raw_data = await websocket.recv()
-    data = ast.literal_eval(raw_data)
-    if 'peer' in data:
-        already_had = data['peer'] == f"ws://{HOST}:{PORT}" \
-                      or data['peer'] in URLS
-        await add_peer(data['peer'])
-        msg = repr({"peers": list(URLS)})
-        if not already_had:
-            await propagate(data['peer'])
-        if 'list_peers' in data:
-            await websocket.send(msg)
-    elif 'ping' in data:
-        await websocket.send(repr({"pong": True}))
-    else:
-        reply = PEER.consume_message(data)
-        if reply:
-            await websocket.send(repr(reply))
+    async def server(self, websocket, path):
+        """Respond to incoming websocket connections."""
+        raw_data = await websocket.recv()
+        data = ast.literal_eval(raw_data)
+        if 'peer' in data:
+            already_had = data['peer'] == f"ws://{HOST}:{PORT}" \
+                          or data['peer'] in URLS
+            await self.add_peer(data['peer'])
+            msg = repr({"peers": list(URLS)})
+            if not already_had:
+                await self.propagate(data['peer'])
+            if 'list_peers' in data:
+                await websocket.send(msg)
+        elif 'ping' in data:
+            await websocket.send(repr({"pong": True}))
+        else:
+            reply = self.worker.consume_message(data)
+            if reply:
+                await websocket.send(repr(reply))
 
+    async def propagate(self, peer):
+        """Send this new peer to our other peers."""
+        for url in list(self.urls):
+            if peer != url:
+                log(f"Sending {peer} to {url}")
+                async with websockets.connect(url) as connection:
+                    await connection.send(repr({"peer": peer}))
 
-async def propagate(peer):
-    """Send this new peer to our other peers."""
-    for url in list(URLS):
-        if peer != url:
-            print(f"Sending {peer} to {url}")
+    async def send_to_all(self, data):
+        """Send arbitrary data to all connected peers."""
+        for url in list(self.urls):
             async with websockets.connect(url) as connection:
-                await connection.send(repr({"peer": peer}))
+                await connection.send(repr(data))
 
-
-async def send_to_all(data):
-    """Send arbitrary data to all connected peers."""
-    for url in list(URLS):
-        async with websockets.connect(url) as connection:
-            await connection.send(repr(data))
-                
-            
-async def add_peer(url):
-    """Add a peer, provided it's online."""
-    if HOST in url and str(PORT) in url:
-        # Don't bother connecting to ourselves!
-        return
-    try:
-        print("Adding new peer:", url)
-        async with websockets.connect(url) as connection:
-            await connection.send(repr({"ping": True}))
-            data = ast.literal_eval(await connection.recv())
-            if "pong" in data:
-                print("Added new peer:", url)
-                URLS.add(url)
-    except Exception as e:
-        print(e)
-
-    
-async def add_peers(urls):
-    """Add all online peers to our list of connections."""
-    for url in urls:
-        if url not in list(URLS):
-            await add_peer(url)
-               
-
-def new_client_msg():
-    """Format the message to be sent when connecting afresh."""
-    return repr({
-        "peer": f"ws://{HOST}:{PORT}",
-        "list_peers": True
-    })
-
-
-def get_random_peer():
-    return random.choice(list(URLS))
-
-    
-async def update_peers():
-    """Update our list of peers from another random peer."""
-    updated = False
-    while not updated:
+    async def add_peer(self, url):
+        """Add a peer, provided it's online."""
+        if self.host in url and str(self.port) in url:
+            # Don't bother connecting to ourselves!
+            return
         try:
-            peer = get_random_peer()
-            async with websockets.connect(peer) as connection:
-                await connection.send(new_client_msg())
+            log("Adding new peer:", url)
+            async with websockets.connect(url) as connection:
+                await connection.send(repr({"ping": True}))
                 data = ast.literal_eval(await connection.recv())
-                await add_peers(data["peers"])
-            updated = True
-        except IndexError as e:
-            if "--gen" not in sys.argv:
-                raise e
-            print("Genesis node doesn't have any peers. (OK)")
-            updated = True
-        except ConnectionRefusedError as e:
-            print(f"Couldn't update from {peer}; removing.")
-            URLS.remove(peer)
-        
-    
-def load_initial_urls():
-    with open("known_good.txt") as f:
-        return [line.strip() for line in f.readlines()]
+                if "pong" in data:
+                    log("Added new peer:", url)
+                    self.urls.add(url)
+        except Exception as e:
+            log(e)
 
 
-async def send_hello(url):
-    """Connect to a peer and send a "hello" message."""
-    async with websockets.connect(url) as connection:
-        msg = repr({"msg": f"Hello from port {PORT}!"})
-        await connection.send(msg)
-
-
-def send_hello_to_peers():
-    """Send a "hello" message to each connected peer."""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    while True:
-        urls = list(URLS)  # Prevent set changing size.
-        print("Sending hello to urls:", urls)
+    async def add_peers(self, urls):
+        """Add all online peers to our list of connections."""
         for url in urls:
+            if url not in list(self.urls):
+                await self.add_peer(url)
+
+    @staticmethod
+    def new_client_msg():
+        """Format the message to be sent when connecting afresh."""
+        return repr({
+            "peer": f"ws://{HOST}:{PORT}",
+            "list_peers": True
+        })
+
+    def get_random_peer(self):
+        try:
+            return random.choice(list(self.urls))
+        except IndexError:
+            return None
+
+    async def update_peers(self):
+        """Update our list of peers from another random peer."""
+        updated = False
+        while not updated:
+            peer = self.get_random_peer()
+            if peer is None:
+                if "--gen" not in sys.argv:
+                    raise ValueError("Non-genesis node can't find any peers.")
+                log("Genesis node doesn't have any peers. (OK)")
+                return
+
             try:
-                asyncio.get_event_loop().run_until_complete(
-                    send_hello(url))
+                async with websockets.connect(peer) as connection:
+                    await connection.send(self.new_client_msg())
+                    data = ast.literal_eval(await connection.recv())
+                    await self.add_peers(data["peers"])
+                updated = True
             except ConnectionRefusedError as e:
-                # Remove any peers which don't respond.
-                print("Connection refused; "
-                      "couldn't send hello to peer.", url, e)
-                URLS.remove(url)
-        import time; time.sleep(5)
-    
+                log(f"Couldn't update from {peer}; removing.")
+                self.urls.remove(peer)
 
-async def request_from_random(request, callback):
-    url = get_random_peer()
-    async with websockets.connect(url) as connection:
-        msg = repr(request)
-        await connection.send(msg)
-        reply = ast.literal_eval(await connection.recv())
-        callback(reply)
-    
-        
-def start_server(Peer):
-    global URLS
-    global PEER
-    URLS = set(load_initial_urls())-set([f"ws://{HOST}:{PORT}"])
-    PEER = Peer(send_to_all, request_from_random)
+    @staticmethod
+    def load_initial_urls():
+        with open("known_good.txt") as f:
+            return [line.strip() for line in f.readlines()]
 
-    # Start up the websocket server and request peer updates.
-    start_server = websockets.serve(server, HOST, PORT)
-    asyncio.get_event_loop().run_until_complete(start_server)
-    asyncio.get_event_loop().run_until_complete(update_peers())
-    
-    # Start worker thread here for mining etc.
-    PEER.start_worker()
+    @staticmethod
+    async def send_hello(url):
+        """Connect to a peer and send a "hello" message."""
+        async with websockets.connect(url) as connection:
+            msg = repr({"msg": f"Hello from port {PORT}!"})
+            await connection.send(msg)
 
-    # Start Flask server for private API
-    from private_api import Api
-    Api(PORT+1, PEER).run()
+    def send_hello_to_peers(self):
+        """Send a "hello" message to each connected peer."""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while True:
+            urls = list(self.urls)  # Prevent set changing size.
+            log("Sending hello to urls:", urls)
+            for url in urls:
+                try:
+                    asyncio.get_event_loop().run_until_complete(
+                        self.send_hello(url))
+                except ConnectionRefusedError as e:
+                    # Remove any peers which don't respond.
+                    log("Connection refused; couldn't send hello to peer.", url, e)
+                    self.urls.remove(url)
+            import time; time.sleep(5)
 
-    # Start websocket server here to respond to questions.
-    print(f"Listening on port {PORT}")
-    asyncio.get_event_loop().run_forever()
+    async def request_from_random(self, request, callback):
+        url = self.get_random_peer()
+        async with websockets.connect(url) as connection:
+            msg = repr(request)
+            await connection.send(msg)
+            reply = ast.literal_eval(await connection.recv())
+            callback(reply)
+
+    def start(self):
+        # Start up the websocket server and request peer updates.
+        start_server = websockets.serve(self.server, HOST, PORT)
+        asyncio.get_event_loop().run_until_complete(start_server)
+        asyncio.get_event_loop().run_until_complete(self.update_peers())
+
+        # Start worker thread here for mining etc.
+        self.worker.start_worker()
+
+        # Start Flask server for private API
+        Api(PORT + 1, self.worker).run()
+
+        # Start websocket server here to respond to questions.
+        log(f"Listening on port {PORT}")
+        asyncio.get_event_loop().run_forever()

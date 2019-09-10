@@ -1,22 +1,19 @@
-import re
+import asyncio
+import hashlib
 import sys
 import time
-import hashlib
-import asyncio
-
+from collections import namedtuple, defaultdict
 from itertools import count
 from threading import Thread
 from uuid import uuid4 as uuid
-from collections import namedtuple, defaultdict
 
 import gossip
 from signing import (
-    sign_transaction, generate_keypair, verify_transaction
+    sign_transaction, generate_keypair
 )
 
-
 # Make logs appear with a prepended port number.
-print = gossip.print
+log = gossip.log
 
 
 UnspentTransaction = namedtuple("UnspentTransaction",
@@ -50,7 +47,7 @@ class Miner(gossip.Peer):
         self.got_new_block = False
         self.private_key, self.public_key = generate_keypair()
         printable_address = self.public_key[:10].decode('utf-8')
-        print(f"Address: <{printable_address}...>")
+        log(f"Address: <{printable_address}...>")
         
         if "--gen" not in sys.argv:
             asyncio_run(self.request_from_random(
@@ -66,7 +63,7 @@ class Miner(gossip.Peer):
         
         # Todo: compare blockchains to choose the longer one.
         self.blocks = blocks
-        print("Updated blockchain.")
+        log("Updated blockchain.")
         self.print_chain()
 
     def update_unspent_transactions_with_block(self, block):
@@ -91,14 +88,14 @@ class Miner(gossip.Peer):
             # Todo: propagate valid transactions
 
     def handle_block_msg(self, block):
-        if self.hash_complete(msg["block"]):
+        if self.hash_complete(block):
             # Todo: fork resolution & sanity checks.
             self.update_unspent_transactions_with_block(block)
-            self.new_block(msg["block"])
+            self.new_block(block)
             self.got_new_block = True
             # Todo: propagate valid blocks.
         else:
-            print("Wrong hash on msg[\"block\"]")
+            log("Wrong hash on msg[\"block\"]")
             breakpoint()
             
     def consume_message(self, msg):
@@ -110,7 +107,7 @@ class Miner(gossip.Peer):
         elif "block" in msg:
             self.handle_block_msg(msg['block'])
         else:
-            print("Unrecognised msg")
+            log("Unrecognised msg")
             breakpoint()
 
     def print_chain(self):
@@ -118,7 +115,7 @@ class Miner(gossip.Peer):
         short_hash = lambda block: str(block['hash'])[:5]
         short_hashes = map(short_hash, self.blocks)
         printable_chain = '<-'.join(short_hashes)
-        print(f"[{length}] {printable_chain}") 
+        log(f"[{length}] {printable_chain}") 
 
     def unspent(self):
         return repr(self.unspent_transactions)
@@ -130,7 +127,7 @@ class Miner(gossip.Peer):
         return balances
         
     def print_unspent(self):
-        print("Unspent:", list(
+        log("Unspent:", list(
             self.unspent_transactions.values()))
 
     def new_block(self, block):
@@ -167,8 +164,7 @@ class Miner(gossip.Peer):
         
     def add_outbound_transaction(self, data):
         """Add an outgoing transaction to the next block."""
-        amount = sum(
-            int(o["amount"]) for o in data["outputs"])
+        amount = sum(int(o["amount"]) for o in data["outputs"])
         fee = int(data.get("fee", 0))
         required = amount + fee
         total, keys = self.get_required_transactions(required)
@@ -211,9 +207,13 @@ class Miner(gossip.Peer):
         asyncio_run(self.send_to_all(signed_transaction))
         
     def validate_transaction(self, transaction):
+        # Note: we don't have to worry about transactions inside
+        # one block interacting with each other. Later, we'll
+        # require a certain number of confirmations before
+        # transactions are accepted.
         breakpoint()
         
-    def validate_transactions_message(self, transactions):
+    def validate_transactions(self, transactions):
         return all(self.validate_transaction(t)
                    for t in transactions)
 
@@ -248,7 +248,7 @@ class Miner(gossip.Peer):
 
             # Check if we've successfully mined a block.
             if self.hash_complete(block):
-                print("Mined new block.")
+                log("Mined new block.")
                 self.mined_new_block(block)
                 # Send our new block to every connected client.
                 asyncio_run(self.send_to_all({"block":block}))
@@ -295,4 +295,4 @@ class Miner(gossip.Peer):
 
 
 if __name__ == "__main__":
-    gossip.start_server(Miner)
+    gossip.Server(Miner).start()
