@@ -4,17 +4,29 @@ from threading import Thread
 
 
 class Api:
-    def __init__(self, port, add_transaction, get_transactions):
+    def __init__(self, port, miner):
         self.port = port
-        self.add_transaction = add_transaction
-        self.get_transactions = get_transactions
+        self.miner = miner
 
     def setup_routes(self, app):
         @app.route("/transaction", methods=['POST'])
         def add_transaction():
-            self.add_transaction(request.get_json())
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            data = request.get_json()
+            self.miner.add_outbound_transaction(data)
             return jsonify({"msg": "OK"})
 
+        @app.route("/unspent")
+        def get_unspent():
+            return jsonify(unspent=self.miner.unspent())
+
+        @app.route("/balances")
+        def get_balances():
+            return jsonify(balances=self.miner.balances())
+        
     def setup_logging(self):
         logger = logging.getLogger("werkzeug")
         logger.disabled = True

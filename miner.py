@@ -1,75 +1,56 @@
 import re
 import sys
 import time
-from uuid import uuid4 as uuid
-import gossip
 import hashlib
-from gossip import print
 import asyncio
+
 from itertools import count
 from threading import Thread
+from uuid import uuid4 as uuid
+from collections import namedtuple, defaultdict
+
+import gossip
+from signing import (
+    sign_transaction, generate_keypair, verify_transaction
+)
+
+
+# Make logs appear with a prepended port number.
+print = gossip.print
+
+
+UnspentTransaction = namedtuple("UnspentTransaction",
+                                "id amount address")
 
 
 def asyncio_run(fn):
+    """Run a function in the current asyncio event loop."""
     asyncio.get_event_loop().run_until_complete(fn)
 
 
-class Peer:
-    def __init__(self, send_to_all, request_from_random):
-        self.send_to_all = send_to_all
-        self.request_from_random = request_from_random
-
-    def consume_message(self, msg):
-        raise NotImplementedError("Peer.consume_message")
-
-
 def get_blockchain():
+    """
+    Format the message to request a blockchain from
+    another node.
+    """
     return {
         "request_blockchain": True
     }
 
-
-def update_unspent_transactions(unspent, new_transactions):
-    # N.B. At this point we're assuming the block is signed.
-    mined = False
-    new_keys = {}
-    for (trx_type, trx_data) in new_transactions:
-        if trx_type == "mine":
-            if mined:
-                print("Warning: double mining attempted.")
-                return
-
-            outputs = trx_data
-
-            # Todo: pass in mining reward amount.
-            ids, amounts, addresses = zip(*outputs)
-            total_amount = sum(amounts)
-            if total_amount < 1000:
-                print("Warning: mining reward not correct.")
-                return
-
-            # Todo: Check id isn't already used.
-            for trx_id, amount, address in outputs:
-                if trx_id in {**unspent, **new_keys}:
-                    print("Warning: ID already used.")
-                    return
-                amount = int(amount)
-                new_keys[trx_id] = (amount, address)
-            mined = True
-    unspent.update(new_keys)
-
     
-class Miner(Peer):
-
-    mining_reward = 1000
-    
+class Miner(gossip.Peer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.unspent_transactions = {}
         self.current_transactions = []
+        self.current_transaction_fees = 0
         self.blocks = []
-        self._difficulty = 25
+        self._difficulty = 20
+        self.mining_reward = 1000
         self.got_new_block = False
+        self.private_key, self.public_key = generate_keypair()
+        printable_address = self.public_key[:10].decode('utf-8')
+        print(f"Address: <{printable_address}...>")
         
         if "--gen" not in sys.argv:
             asyncio_run(self.request_from_random(
@@ -90,29 +71,36 @@ class Miner(Peer):
 
     def update_unspent_transactions_with_block(self, block):
         """Update our unspent transactions pool."""
-        transactions = block['transactions']
-        update_unspent_transactions(
-            self.unspent_transactions, transactions)
-        self.print_unspent()
+        id, amount, address = block["mine"]
+        self.unspent_transactions[id] = \
+            UnspentTransaction(id, amount, address)
 
-    def handle_transactions_msg(data):
+        raise NotImplementedError("Update unspent trxs")
+
+    def add_unspent_transaction(self, transaction):
+        # Todo: validate signature
+        # Todo: add new UnspentTransaction to our set.
+        breakpoint()
+        
+    def handle_transactions_msg(self, data):
         valid = self.validate_transactions_message(data)
         if not valid:
             return
         for transaction in data:
-            self.update_transactions(transaction)
+            self.add_unspent_transaction(transaction)
             # Todo: propagate valid transactions
 
-    def handle_block_msg(block):
+    def handle_block_msg(self, block):
         if self.hash_complete(msg["block"]):
             # Todo: fork resolution & sanity checks.
+            self.update_unspent_transactions_with_block(block)
             self.new_block(msg["block"])
             self.got_new_block = True
             # Todo: propagate valid blocks.
         else:
             print("Wrong hash on msg[\"block\"]")
             breakpoint()
-
+            
     def consume_message(self, msg):
         """Be a good Peer and respond to messages."""
         if "transactions" in msg:
@@ -132,44 +120,95 @@ class Miner(Peer):
         printable_chain = '<-'.join(short_hashes)
         print(f"[{length}] {printable_chain}") 
 
+    def unspent(self):
+        return repr(self.unspent_transactions)
+        
+    def balances(self):
+        balances = defaultdict(int)
+        for _, amount, to in self.unspent_transactions.values():
+            balances[to.decode('utf-8')] += amount
+        return balances
+        
     def print_unspent(self):
         print("Unspent:", list(
             self.unspent_transactions.values()))
-        
+
     def new_block(self, block):
-        self.update_unspent_transactions_with_block(block)
+        # Todo: this method assumes block is valid.
         self.blocks.append({
             **block,
             "hash": self.cryptographic_hash(block)
         })
-        self.print_chain()
 
-    def add_transaction(self, transaction):
-        # Todo: find a list of inputs for the given amount.
-        # Each input is an unspent transaction whose output
-        # was the address we're using.
+    def mined_new_block(self, block):
+        # Add the block to our blockchain.
+        self.new_block(block)
         
-        # Inputs is a list of unspent transaction IDs.
-        # Outputs is a list of (address, amount) pairs.
-        # The outputs plus change should sum to less than
-        # or equal to the inputs.
-        # The difference is added on to the mining trx.
+        # Add the mining transaction to our unspents.
+        mine_id, amount, addr = block["mine"]
+        mine_trx = UnspentTransaction(mine_id, amount, addr)
+        self.unspent_transactions[mine_id] = mine_trx
+        self.current_transaction_fees = 0
+        self.current_transactions = []
+        self.print_chain()
+        
+    def get_required_transactions(self, required):
+        total = 0
+        keys = set()
+        for unspent in self.unspent_transactions.values():
+            key, amount, address = unspent
+            if address != self.address:
+                continue
+            total += amount
+            keys.add(key)
+            if total >= required:
+                break
+        return total, keys
+        
+    def add_outbound_transaction(self, data):
+        """Add an outgoing transaction to the next block."""
+        amount = sum(
+            int(o["amount"]) for o in data["outputs"])
+        fee = int(data.get("fee", 0))
+        required = amount + fee
+        total, keys = self.get_required_transactions(required)
+        change = total - required
+
+        formatted_outputs = [
+            (str(uuid()),
+             int(output["amount"]),
+             str(output["address"]).encode('utf-8'))
+            for output in data["outputs"]
+        ]
         
         transaction = {
-            "inputs": (),
-            "outputs": (),
-            "change": ""
+            "inputs": tuple(keys),
+            "outputs": formatted_outputs,
+            "change": change
         }
 
-        # Sign our transaction using our public key.
-        signed_transaction = sign_transaction(transaction)
+        # Sign our transaction using our private key.
+        signed_transaction = sign_transaction(
+            transaction, self.private_key
+        )
 
         # Now we add this to the next block.
         self.current_transactions.append(signed_transaction)
 
+        # Todo: wait for some number of confirmations.
+        for output in transaction["outputs"]:
+            trx_id = output[0]
+            self.unspent_transactions[trx_id] = output
+
+        # Delete inputs from our unspent transactions pool.
+        for input_ in keys:
+            del self.unspent_transactions[input_]
+            
         # Also keep track of how big our transaction fees are.
-        fee = sum(inputs) - sum(outputs) - change
-        self.transaction_fees += fee
+        self.current_transaction_fees += fee
+
+        # Propagate this transaction to all nodes.
+        asyncio_run(self.send_to_all(signed_transaction))
         
     def validate_transaction(self, transaction):
         breakpoint()
@@ -180,16 +219,12 @@ class Miner(Peer):
 
     def mine_one_block(self):
         # Note: each subkey needs to be hashable.
+        fees = self.current_transaction_fees
         block = {
-            'transactions': (
-                *self.current_transactions,
-                 ("mine", (
-                     (uuid().hex,
-                      # Todo: mining reward + trx_fees
-                      self.mining_reward,
-                      self.address),
-                 ))
-            ),
+            'transactions': (),
+            "mine": (str(uuid()),
+                     self.mining_reward + fees,
+                     self.address),
             'timestamp': int(time.time()),
             'previous_block': self.previous_block_hash,
             'nonce': 0
@@ -201,10 +236,20 @@ class Miner(Peer):
             if self.got_new_block:
                 self.got_new_block = False
                 return
+
+            # Update our list of transactions.
+            transactions = tuple(self.current_transactions)
+            block['transactions'] = transactions
+
+            # Update the reward with any new fees.
+            uid, _, addr = block["mine"]
+            fees = self.current_transaction_fees
+            block["mine"] = (uid, self.mining_reward+fees, addr)
+
             # Check if we've successfully mined a block.
             if self.hash_complete(block):
                 print("Mined new block.")
-                self.new_block(block)
+                self.mined_new_block(block)
                 # Send our new block to every connected client.
                 asyncio_run(self.send_to_all({"block":block}))
                 break
@@ -212,7 +257,7 @@ class Miner(Peer):
     @property
     def address(self):
         # Todo: this should be a public key.
-        return gossip.PORT
+        return self.public_key
             
     @property
     def previous_block_hash(self):

@@ -19,6 +19,20 @@ def print(*args, **kwargs):
     return _print(f"[{PORT}]", *args, **kwargs)
 
 
+class Peer:
+    """
+    Abstract base class defining which methods a node must
+    implement to connect to other nodes.
+    """
+    def __init__(self, send_to_all, request_from_random):
+        self.send_to_all = send_to_all
+        self.request_from_random = request_from_random
+
+    def consume_message(self, msg):
+        raise NotImplementedError("Peer.consume_message")
+
+
+
 async def server(websocket, path):
     """Respond to incoming websocket connections."""
     raw_data = await websocket.recv()
@@ -170,7 +184,7 @@ def start_server(Peer):
 
     # Start Flask server for private API
     from private_api import Api
-    Api(PORT+1, None, None).run()
+    Api(PORT+1, PEER).run()
 
     # Start websocket server here to respond to questions.
     print(f"Listening on port {PORT}")
