@@ -44,7 +44,7 @@ def update_unspent_transactions(unspent, new_transactions):
             # Todo: pass in mining reward amount.
             ids, amounts, addresses = zip(*outputs)
             total_amount = sum(amounts)
-            if total_amount != 1000:
+            if total_amount < 1000:
                 print("Warning: mining reward not correct.")
                 return
 
