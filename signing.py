@@ -7,17 +7,19 @@ from nacl.exceptions import (
 )
 
 
-seed = secrets.token_bytes(32)
-signing_key = signing.SigningKey(seed)
-verify_key = signing_key.verify_key
-verify_key_hex = verify_key.encode(encoding.HexEncoder)
+def generate_keypair():
+    seed = secrets.token_bytes(32)
+    signing_key = signing.SigningKey(seed)
+    verify_key = signing_key.verify_key
+    verify_key_hex = verify_key.encode(encoding.HexEncoder)
+    return signing_key, verify_key_hex
 
 
 def encode(transaction):
     return repr(transaction).encode("utf-8")
 
 
-def sign_transaction(transaction):
+def sign_transaction(transaction, signing_key):
     trx_bytes = encode(transaction)
     signed = signing_key.sign(trx_bytes)
     signature = signed.signature
@@ -48,9 +50,11 @@ def verify_transaction(transaction):
 
 
 if __name__ == "__main__":
+    key, verify_key_hex = generate_keypair()
     transaction = { "amount": 1000, "to": "Bob",
                     "from": verify_key_hex }
-    signed_transaction = sign_transaction(transaction)
+    signed_transaction = sign_transaction(transaction, key)
     assert verify_transaction(signed_transaction)
     signed_transaction["amount"] += 100
     assert not verify_transaction(signed_transaction)
+    print("• Passed tests •")

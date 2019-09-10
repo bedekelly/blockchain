@@ -70,6 +70,7 @@ class Miner(Peer):
         self.blocks = []
         self._difficulty = 25
         self.got_new_block = False
+        
         if "--gen" not in sys.argv:
             asyncio_run(self.request_from_random(
                 get_blockchain(),
@@ -104,7 +105,7 @@ class Miner(Peer):
 
     def handle_block_msg(block):
         if self.hash_complete(msg["block"]):
-            # Todo: fork resolution
+            # Todo: fork resolution & sanity checks.
             self.new_block(msg["block"])
             self.got_new_block = True
             # Todo: propagate valid blocks.
