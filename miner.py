@@ -116,9 +116,10 @@ class Miner(gossip.Peer):
     def print_chain(self):
         """Print out a minified chain of block hashes."""
         length = len(self.blocks)
-        short_hashes = map(short_hash, self.blocks)
+        short_hashes = map(short_hash, self.blocks[-5:])
         printable_chain = "<-".join(short_hashes)
-        log(f"[{length}] {printable_chain}")
+        dots = "...<-" if length > 5 else ""
+        log(f"Chain(length={length}, {dots}{printable_chain})")
 
     def unspent(self):
         return repr(self.unspent_transactions)

@@ -81,7 +81,6 @@ class Server:
             # Don't bother connecting to ourselves!
             return
         try:
-            log("Adding new peer:", url)
             async with websockets.connect(url) as connection:
                 await connection.send(repr({"ping": True}))
                 data = ast.literal_eval(await connection.recv())
