@@ -42,7 +42,7 @@ class Miner(gossip.Peer):
         self.current_transactions = []
         self.current_transaction_fees = 0
         self.blocks = []
-        self._difficulty = 22
+        self._difficulty = 20
         self.mining_reward = 1000
         self.got_new_block = False
         self.private_key, self.public_key = generate_keypair()
@@ -66,6 +66,12 @@ class Miner(gossip.Peer):
         self.unspent_transactions[id] = UnspentTransaction(id, amount, address)
 
         for transaction in block["transactions"]:
+
+            for transaction_input in transaction["inputs"]:
+                # Todo: think carefully about the cases here.
+                if transaction_input in self.unspent_transactions:
+                    del self.unspent_transactions[transaction_input]
+
             for output in transaction["outputs"]:
                 output_id, _, _ = output
                 self.unspent_transactions[output_id] = UnspentTransaction(*output)
@@ -73,11 +79,18 @@ class Miner(gossip.Peer):
     def handle_transaction_msg(self, transaction):
         """When sent a transaction, check it and add it to our next block."""
         if self.validate_transaction(transaction):
+            log("Received valid transaction:", transaction)
             self.current_transactions.append(transaction)
 
+    def validate_block(self, block):
+        return (
+            self.hash_complete(block)
+            and block["previous_block"] == self.previous_block_hash
+        )
+
     def handle_block_msg(self, block):
-        if self.hash_complete(block):
-            # Todo: fork resolution & sanity checks.
+        if self.validate_block(block):
+            # Todo: fork resolution here.
             self.update_unspent_transactions_with_block(block)
             self.new_block(block)
             self.got_new_block = True
@@ -132,6 +145,7 @@ class Miner(gossip.Peer):
         mine_trx = UnspentTransaction(mine_id, amount, addr)
         self.unspent_transactions[mine_id] = mine_trx
         self.current_transaction_fees = 0
+        # Note: current transactions should already have been added to our unspent transactions.
         self.current_transactions = []
         self.print_chain()
 
@@ -146,6 +160,8 @@ class Miner(gossip.Peer):
             keys.add(key)
             if total >= required:
                 break
+        else:
+            raise ValueError("Insufficient Funds!")
         return total, keys
 
     def add_outbound_transaction(self, data):
@@ -155,7 +171,10 @@ class Miner(gossip.Peer):
         amount = sum(int(o["amount"]) for o in data["outputs"])
         fee = int(data.get("fee", 0))
         required = amount + fee
-        total, keys = self.get_required_transactions(required)
+        try:
+            total, keys = self.get_required_transactions(required)
+        except ValueError as e:
+            return {"error": "Insufficient funds!"}
         change = total - required
 
         # Generate the transaction outputs, including change.
@@ -183,8 +202,16 @@ class Miner(gossip.Peer):
         # Also keep track of how big our transaction fees are.
         self.current_transaction_fees += fee
 
+        # Add this transaction to our unspent transactions.
+        for output in transaction["outputs"]:
+            output_id, _, _ = output
+            self.unspent_transactions[output_id] = output
+
         # Propagate this transaction to all nodes.
         asyncio_run(self.send_to_all({"transaction": signed_transaction}))
+
+        # Return a success message to our client.
+        return {"msg": "OK"}
 
     def validate_transaction(self, transaction):
         # Note: we don't have to worry about transactions inside
@@ -217,7 +244,13 @@ class Miner(gossip.Peer):
         input_total = sum(t.amount for t in input_transactions)
         output_total = sum([t[1] for t in transaction["outputs"]])
         fee = input_total - output_total
+
         if fee < 0:
+            print("Transaction declined since fee would be <0.")
+            return False
+
+        if any(t[1] <= 0 for t in transaction["outputs"]):
+            print("Transaction with a <=0 output declined.")
             return False
 
         return True

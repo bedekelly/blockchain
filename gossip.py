@@ -69,8 +69,11 @@ class Server:
     async def send_to_all(self, data):
         """Send arbitrary data to all connected peers."""
         for url in list(self.urls):
-            async with websockets.connect(url) as connection:
-                await connection.send(repr(data))
+            try:
+                async with websockets.connect(url) as connection:
+                    await connection.send(repr(data))
+            except ConnectionRefusedError:
+                self.urls.remove(url)
 
     async def add_peer(self, url):
         """Add a peer, provided it's online."""
