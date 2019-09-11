@@ -42,6 +42,7 @@ class Miner(gossip.Peer):
         self.current_transactions = []
         self.current_transaction_fees = 0
         self.blocks = []
+        self.loser_blockchains = []
         self._difficulty = 20
         self.mining_reward = 1000
         self.got_new_block = False
@@ -66,7 +67,6 @@ class Miner(gossip.Peer):
         self.unspent_transactions[id] = UnspentTransaction(id, amount, address)
 
         for transaction in block["transactions"]:
-
             for transaction_input in transaction["inputs"]:
                 # Todo: think carefully about the cases here.
                 if transaction_input in self.unspent_transactions:
@@ -86,20 +86,80 @@ class Miner(gossip.Peer):
         return (
             self.hash_complete(block)
             and block["previous_block"] == self.previous_block_hash
+            and self.validate_transactions(block["transactions"])
         )
 
+    def resolve_block_conflict(self, block):
+        """
+        When we receive a block with a surprising parent ID, attempt to
+        resolve the conflict.
+
+        Todo: handle SUB-FORKS:
+            Our current blockchain is A->B->C->D->E
+            We get a block F claiming B->F
+            We get a block G claiming F->G
+        So far so good: we've got F->G in our loser pool.
+        Now we get a block H claiming F->H.
+        In that case I think we should have a separate loser blockchain F->H in the loser pool.
+        If we then get a block I claiming H->I, we can add I to BOTH loser blockchains.
+        N.B. this means we'll have to check BOTH loser blockchains to see if they're now winners.
+
+        Todo: think about what happens when loser blockchains claim an existing block in the winning blockchain.
+        Todo: write good automated tests for all these situations.
+        Todo: store our own block height; and keep track of the block height of loser forks.
+
+        * Look back through our blockchain to see if its parent is an out-of-date node:
+          + If so, check if it forms the start of a fork in our loser pool:
+            + If not, keep it in its own new loser blockchain
+            - If so, check if the fork is longer than our current one:
+              + If so, swap in the new fork and put our fork into the "loser blockchains" pool
+              + If not, leave the new fork in the loser pool
+          + If not, check if it forms the start OR END of a fork in our loser pool:
+            - If not, keep it in its own new loser blockchain
+            - If so:
+              + Append it to the start or end as appropriate
+              + Check if the fork starts with a parent node which is in the current blockchain:
+                - If so, check if the fork is longer than the current one:
+                  + If so, swap the current fork into the loser pool
+                  + If not, leave it in the loser pool
+        """
+
+        for reverse_index, old_block in enumerate(reversed(self.blocks)):
+
+            if old_block["hash"] == block["previous_block"]:
+                # Found the new block's parent.
+                # Todo: each loser blockchain should store its proposed height.
+                # Todo: we should keep track of our current block height.
+                # Todo: that way, we can easily compare the two!
+                self.loser_blockchains.append([block])
+                break
+
+        else:
+            # Couldn't find the received block's parent anywhere; checking in loser blockchains.
+            for blockchain in self.loser_blockchains:
+                # Todo: All cases here.
+                # Does this blockchain fit on the start or end of a loser blockchain?
+                # If so, append it -- and then check if the resulting blockchain becomes a winner.
+                raise NotImplementedError("Check if loser blockchain becomes a winner!")
+            else:
+                # Add our block as a new "loser blockchain"
+                self.loser_blockchains.append([block])
+
     def handle_block_msg(self, block):
+        # Validate an incoming block message.
         if self.validate_block(block):
-            # Todo: fork resolution here.
             self.update_unspent_transactions_with_block(block)
             self.new_block(block)
             self.got_new_block = True
-            # Todo: propagate valid blocks.
+            # Todo: propagate valid blocks to peers.
             log("Updated with new block.")
             self.print_chain()
-        else:
-            log('Wrong hash on msg["block"]')
-            breakpoint()
+
+        elif self.hash_complete(block) and self.validate_transactions(block):
+
+            # Note: this means only the previous block hash wasn't right;
+            # it's still hashed correctly and each transaction is valid and signed.
+            self.resolve_block_conflict(block)
 
     def consume_message(self, msg):
         """Be a good Peer and respond to messages."""
