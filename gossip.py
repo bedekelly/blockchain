@@ -2,6 +2,7 @@ import ast
 import asyncio
 import random
 import sys
+import time
 
 import websockets
 
@@ -21,6 +22,7 @@ class Peer:
     Abstract base class defining which methods a node must
     implement to connect to other nodes.
     """
+
     def __init__(self, send_to_all, request_from_random):
         self.send_to_all = send_to_all
         self.request_from_random = request_from_random
@@ -39,16 +41,17 @@ class Server:
         """Respond to incoming websocket connections."""
         raw_data = await websocket.recv()
         data = ast.literal_eval(raw_data)
-        if 'peer' in data:
-            already_had = data['peer'] == f"ws://{HOST}:{PORT}" \
-                          or data['peer'] in URLS
-            await self.add_peer(data['peer'])
-            msg = repr({"peers": list(URLS)})
+        if "peer" in data:
+            already_had = (
+                data["peer"] == f"ws://{HOST}:{PORT}" or data["peer"] in self.urls
+            )
+            await self.add_peer(data["peer"])
+            msg = repr({"peers": list(self.urls)})
             if not already_had:
-                await self.propagate(data['peer'])
-            if 'list_peers' in data:
+                await self.propagate(data["peer"])
+            if "list_peers" in data:
                 await websocket.send(msg)
-        elif 'ping' in data:
+        elif "ping" in data:
             await websocket.send(repr({"pong": True}))
         else:
             reply = self.worker.consume_message(data)
@@ -71,7 +74,7 @@ class Server:
 
     async def add_peer(self, url):
         """Add a peer, provided it's online."""
-        if self.host in url and str(self.port) in url:
+        if HOST in url and str(PORT) in url:
             # Don't bother connecting to ourselves!
             return
         try:
@@ -85,7 +88,6 @@ class Server:
         except Exception as e:
             log(e)
 
-
     async def add_peers(self, urls):
         """Add all online peers to our list of connections."""
         for url in urls:
@@ -95,10 +97,7 @@ class Server:
     @staticmethod
     def new_client_msg():
         """Format the message to be sent when connecting afresh."""
-        return repr({
-            "peer": f"ws://{HOST}:{PORT}",
-            "list_peers": True
-        })
+        return repr({"peer": f"ws://{HOST}:{PORT}", "list_peers": True})
 
     def get_random_peer(self):
         try:
@@ -123,7 +122,7 @@ class Server:
                     data = ast.literal_eval(await connection.recv())
                     await self.add_peers(data["peers"])
                 updated = True
-            except ConnectionRefusedError as e:
+            except ConnectionRefusedError:
                 log(f"Couldn't update from {peer}; removing.")
                 self.urls.remove(peer)
 
@@ -142,6 +141,7 @@ class Server:
     def send_hello_to_peers(self):
         """Send a "hello" message to each connected peer."""
         import asyncio
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         while True:
@@ -149,13 +149,12 @@ class Server:
             log("Sending hello to urls:", urls)
             for url in urls:
                 try:
-                    asyncio.get_event_loop().run_until_complete(
-                        self.send_hello(url))
+                    asyncio.get_event_loop().run_until_complete(self.send_hello(url))
                 except ConnectionRefusedError as e:
                     # Remove any peers which don't respond.
                     log("Connection refused; couldn't send hello to peer.", url, e)
                     self.urls.remove(url)
-            import time; time.sleep(5)
+            time.sleep(5)
 
     async def request_from_random(self, request, callback):
         url = self.get_random_peer()

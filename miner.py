@@ -9,7 +9,7 @@ from uuid import uuid4 as uuid
 
 import gossip
 from hashing import cryptographic_hash
-from signing import sign_transaction, generate_keypair
+from signing import sign_transaction, generate_keypair, verify_transaction
 
 # Make logs appear with a prepended port number.
 log = gossip.log
@@ -42,17 +42,12 @@ class Miner(gossip.Peer):
         self.current_transactions = []
         self.current_transaction_fees = 0
         self.blocks = []
-        self._difficulty = 10
+        self._difficulty = 22
         self.mining_reward = 1000
         self.got_new_block = False
         self.private_key, self.public_key = generate_keypair()
         printable_address = self.public_key[:10].decode("utf-8")
         log(f"Address: <{printable_address}...>")
-
-        if "--gen" not in sys.argv:
-            asyncio_run(
-                self.request_from_random(get_blockchain(), self.update_blockchain)
-            )
 
     def update_blockchain(self, response):
         blocks = response["blocks"]
@@ -70,20 +65,15 @@ class Miner(gossip.Peer):
         id, amount, address = block["mine"]
         self.unspent_transactions[id] = UnspentTransaction(id, amount, address)
 
-        raise NotImplementedError("Update unspent trxs")
+        for transaction in block["transactions"]:
+            for output in transaction["outputs"]:
+                output_id, _, _ = output
+                self.unspent_transactions[output_id] = UnspentTransaction(*output)
 
-    def add_unspent_transaction(self, transaction):
-        # Todo: validate signature
-        # Todo: add new UnspentTransaction to our set.
-        breakpoint()
-
-    def handle_transaction_msg(self, data):
-        valid = self.validate_transaction(data)
-        if not valid:
-            return
-        for transaction in data:
-            self.add_unspent_transaction(transaction)
-            # Todo: propagate valid transactions
+    def handle_transaction_msg(self, transaction):
+        """When sent a transaction, check it and add it to our next block."""
+        if self.validate_transaction(transaction):
+            self.current_transactions.append(transaction)
 
     def handle_block_msg(self, block):
         if self.hash_complete(block):
@@ -92,6 +82,8 @@ class Miner(gossip.Peer):
             self.new_block(block)
             self.got_new_block = True
             # Todo: propagate valid blocks.
+            log("Updated with new block.")
+            self.print_chain()
         else:
             log('Wrong hash on msg["block"]')
             breakpoint()
@@ -158,21 +150,24 @@ class Miner(gossip.Peer):
 
     def add_outbound_transaction(self, data):
         """Add an outgoing transaction to the next block."""
+
+        # Calculate the correct amounts for the transaction.
         amount = sum(int(o["amount"]) for o in data["outputs"])
         fee = int(data.get("fee", 0))
         required = amount + fee
         total, keys = self.get_required_transactions(required)
         change = total - required
 
+        # Generate the transaction outputs, including change.
         formatted_outputs = [
             (str(uuid()), int(output["amount"]), str(output["address"]).encode("utf-8"))
             for output in data["outputs"]
         ]
-
+        formatted_outputs.append((str(uuid()), change, self.address))
         transaction = {
             "inputs": tuple(keys),
             "outputs": formatted_outputs,
-            "change": change,
+            "from": self.address,
         }
 
         # Sign our transaction using our private key.
@@ -180,11 +175,6 @@ class Miner(gossip.Peer):
 
         # Now we add this to the next block.
         self.current_transactions.append(signed_transaction)
-
-        # Todo: wait for some number of confirmations.
-        for output in transaction["outputs"]:
-            trx_id = output[0]
-            self.unspent_transactions[trx_id] = output
 
         # Delete inputs from our unspent transactions pool.
         for input_ in keys:
@@ -194,21 +184,49 @@ class Miner(gossip.Peer):
         self.current_transaction_fees += fee
 
         # Propagate this transaction to all nodes.
-        asyncio_run(self.send_to_all(signed_transaction))
+        asyncio_run(self.send_to_all({"transaction": signed_transaction}))
 
     def validate_transaction(self, transaction):
         # Note: we don't have to worry about transactions inside
         # one block interacting with each other. Later, we'll
-        # require a certain number of confirmations before
-        # transactions are accepted.
-        breakpoint()
-        return False
+        # require a certain number of confirmations for inputs
+        # before transactions are accepted.
+
+        # First, check the cryptographic signature is correct.
+        if not verify_transaction(transaction):
+            return
+
+        # Next check all outputs actually belong to the right address.
+        input_transactions = []
+        for input_id in transaction["inputs"]:
+
+            # Check we have a record of every unspent transaction used.
+            input_transaction = self.unspent_transactions.get(input_id, None)
+            if input_transaction is None:
+                return False
+
+            # Check each unspent transaction's output is the same as this transaction's input.
+            _, amount, address = input_transaction
+            if address != transaction["from"]:
+                return False
+
+            # Build up a list of the input transactions used.
+            input_transactions.append(input_transaction)
+
+        # Check that the balance of the inputs and outputs is >=0.
+        input_total = sum(t.amount for t in input_transactions)
+        output_total = sum([t[1] for t in transaction["outputs"]])
+        fee = input_total - output_total
+        if fee < 0:
+            return False
+
+        return True
 
     def validate_transactions(self, transactions):
         return all(self.validate_transaction(t) for t in transactions)
 
     def mine_one_block(self):
-        # Note: each subkey needs to be hashable.
+        # Note: each sub-key needs to be hashable.
         fees = self.current_transaction_fees
         block = {
             "transactions": (),
@@ -267,9 +285,14 @@ class Miner(gossip.Peer):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        if "--gen" not in sys.argv:
+            asyncio_run(
+                self.request_from_random(get_blockchain(), self.update_blockchain)
+            )
+
         while True:
             self.mine_one_block()
-            time.sleep(20)
+            # time.sleep(5)
 
     def start_worker(self):
         Thread(target=self.mine, daemon=True).start()
