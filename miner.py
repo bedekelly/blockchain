@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import sys
 import time
-from collections import namedtuple, defaultdict
+from collections import namedtuple, defaultdict, deque
 from itertools import count
 from threading import Thread
 from uuid import uuid4 as uuid
@@ -74,7 +74,8 @@ class Miner(gossip.Peer):
 
             for output in transaction["outputs"]:
                 output_id, _, _ = output
-                self.unspent_transactions[output_id] = UnspentTransaction(*output)
+                transaction = UnspentTransaction(*output)
+                self.unspent_transactions[output_id] = transaction
 
     def handle_transaction_msg(self, transaction):
         """When sent a transaction, check it and add it to our next block."""
@@ -93,57 +94,50 @@ class Miner(gossip.Peer):
         """
         When we receive a block with a surprising parent ID, attempt to
         resolve the conflict.
-
-        Todo: handle SUB-FORKS:
-            Our current blockchain is A->B->C->D->E
-            We get a block F claiming B->F
-            We get a block G claiming F->G
-        So far so good: we've got F->G in our loser pool.
-        Now we get a block H claiming F->H.
-        In that case I think we should have a separate loser blockchain F->H in the loser pool.
-        If we then get a block I claiming H->I, we can add I to BOTH loser blockchains.
-        N.B. this means we'll have to check BOTH loser blockchains to see if they're now winners.
-
-        Todo: think about what happens when loser blockchains claim an existing block in the winning blockchain.
         Todo: write good automated tests for all these situations.
-        Todo: store our own block height; and keep track of the block height of loser forks.
-
-        * Look back through our blockchain to see if its parent is an out-of-date node:
-          + If so, check if it forms the start of a fork in our loser pool:
-            + If not, keep it in its own new loser blockchain
-            - If so, check if the fork is longer than our current one:
-              + If so, swap in the new fork and put our fork into the "loser blockchains" pool
-              + If not, leave the new fork in the loser pool
-          + If not, check if it forms the start OR END of a fork in our loser pool:
-            - If not, keep it in its own new loser blockchain
-            - If so:
-              + Append it to the start or end as appropriate
-              + Check if the fork starts with a parent node which is in the current blockchain:
-                - If so, check if the fork is longer than the current one:
-                  + If so, swap the current fork into the loser pool
-                  + If not, leave it in the loser pool
         """
 
-        for reverse_index, old_block in enumerate(reversed(self.blocks)):
+        # Always add the block as its own singleton chain!
+        self.loser_blockchains.append(deque([block]))
+        
+        parent = self.find_block_by_id(block["previous_block"])
+        
+        def is_parent_of(block_one, block_two):
+            return block_two["previous_block"] == block_one["id"]
 
-            if old_block["hash"] == block["previous_block"]:
-                # Found the new block's parent.
-                # Todo: each loser blockchain should store its proposed height.
-                # Todo: we should keep track of our current block height.
-                # Todo: that way, we can easily compare the two!
-                self.loser_blockchains.append([block])
-                break
-
+        if parent is not None:
+            for blockchain in list(self.loser_blockchains):
+                start, *rest = blockchain
+                if is_parent_of(block, start):
+                    blockchain.appendleft(block)
+                    self.swap_if_longer(blockchain, parent)
         else:
-            # Couldn't find the received block's parent anywhere; checking in loser blockchains.
-            for blockchain in self.loser_blockchains:
-                # Todo: All cases here.
-                # Does this blockchain fit on the start or end of a loser blockchain?
-                # If so, append it -- and then check if the resulting blockchain becomes a winner.
-                raise NotImplementedError("Check if loser blockchain becomes a winner!")
-            else:
-                # Add our block as a new "loser blockchain"
-                self.loser_blockchains.append([block])
+            for blockchain in list(self.loser_blockchains):
+                start = blockchain[0]
+                end = blockchain[-1]
+                if is_parent_of(block, start):
+                    blockchain.appendleft(block)
+                elif is_parent_of(end, block):
+                    blockchain.append(block)
+                    self.swap_if_longer(blockchain, parent)
+
+    def find_block_by_id(self, block_id):
+        next(i for i, block in enumerate(self.blocks)
+             if block["id"] == block_id)
+                    
+    def swap_if_longer(self, blockchain, parent):
+        start = blockchain[0]
+        parent = self.blocks.index(parent)
+        blocks_up_to_parent = self.blocks[:parent+1]
+        blocks_past_parent = self.blocks[parent+1:]
+        if len(blockchain) > len(blocks_past_parent):
+            self.blocks = blocks_up_to_parent + blockchain
+            self.loser_blockchains.append(deque(blocks_past_parent))
+            self.loser_blockchains.remove(blockchain)
+
+    @property
+    def height(self):
+        return len(self.blocks)
 
     def handle_block_msg(self, block):
         # Validate an incoming block message.
@@ -323,6 +317,7 @@ class Miner(gossip.Peer):
         # Note: each sub-key needs to be hashable.
         fees = self.current_transaction_fees
         block = {
+            "id": str(uuid()),
             "transactions": (),
             "mine": (str(uuid()), self.mining_reward + fees, self.address),
             "timestamp": int(time.time()),
