@@ -119,19 +119,23 @@ class Miner(gossip.Peer):
                     blockchain.appendleft(block)
                 elif is_parent_of(end, block):
                     blockchain.append(block)
-                    self.swap_if_longer(blockchain, parent)
+                    fork_parent_id = start["previous_block"]
+                    fork_parent_index = self.find_block_by_id(fork_parent_id)
+                    if fork_parent_index:
+                        self.swap_if_longer(blockchain, fork_parent_index)
 
     def find_block_by_id(self, block_id):
-        next(i for i, block in enumerate(self.blocks)
-             if block["id"] == block_id)
+        try:
+            return next(i for i, block in enumerate(self.blocks)
+                        if block["id"] == block_id)
+        except StopIteration:
+            return None
                     
     def swap_if_longer(self, blockchain, parent):
-        start = blockchain[0]
-        parent = self.blocks.index(parent)
         blocks_up_to_parent = self.blocks[:parent+1]
         blocks_past_parent = self.blocks[parent+1:]
         if len(blockchain) > len(blocks_past_parent):
-            self.blocks = blocks_up_to_parent + blockchain
+            self.blocks = blocks_up_to_parent + list(blockchain)
             self.loser_blockchains.append(deque(blocks_past_parent))
             self.loser_blockchains.remove(blockchain)
 
@@ -287,7 +291,8 @@ class Miner(gossip.Peer):
             if input_transaction is None:
                 return False
 
-            # Check each unspent transaction's output is the same as this transaction's input.
+            # Check each unspent transaction's output is the same as this
+            # transaction's input.
             _, amount, address = input_transaction
             if address != transaction["from"]:
                 return False
