@@ -3,7 +3,7 @@ import hashlib
 import sys
 import time
 from collections import namedtuple, defaultdict, deque
-from itertools import count
+from itertools import count, product, combinations, permutations
 from threading import Thread
 from uuid import uuid4 as uuid
 
@@ -35,6 +35,11 @@ def get_blockchain():
     return {"request_blockchain": True}
 
 
+def is_parent_of(block_one, block_two):
+    """Returns True if block_one is parent of block_two, False otherwise."""
+    return block_one["id"] == block_two["previous_block"]
+
+
 class Miner(gossip.Peer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -51,20 +56,21 @@ class Miner(gossip.Peer):
         log(f"Address: <{printable_address}...>")
 
     def update_blockchain(self, response):
+        """
+        Given a response from a peer containing a full blockchain C,
+        set our own blockchain to C.
+        """
         blocks = response["blocks"]
         for block in blocks:
             self.update_unspent_transactions_with_block(block)
-        self.print_unspent()
-
-        # Todo: compare blockchains to choose the longer one.
         self.blocks = blocks
         log("Updated blockchain.")
         self.print_chain()
 
     def update_unspent_transactions_with_block(self, block):
         """Update our unspent transactions pool."""
-        id, amount, address = block["mine"]
-        self.unspent_transactions[id] = UnspentTransaction(id, amount, address)
+        trxid, amount, address = block["mine"]
+        self.unspent_transactions[trxid] = UnspentTransaction(trxid, amount, address)
 
         for transaction in block["transactions"]:
             for transaction_input in transaction["inputs"]:
@@ -90,50 +96,61 @@ class Miner(gossip.Peer):
             and self.validate_transactions(block["transactions"])
         )
 
+    def coalesce_loser_blockchains(self):
+        """
+        Coalesce any pairs of chains into single chains, leaving the originals put.
+        """
+        for chain1, chain2 in permutations(self.loser_blockchains, r=2):
+            if is_parent_of(chain1[-1], chain2[0]):
+                self.loser_blockchains.append(chain1 + chain2)
+
+    def add_to_losers(self, block):
+        """
+        Add a block to the loser blockchains.
+        """
+        for blockchain in list(self.loser_blockchains):
+            start = blockchain[0]
+            end = blockchain[-1]
+            if is_parent_of(block, start):
+                self.loser_blockchains.append(deque([block]) + blockchain)
+            elif is_parent_of(end, block):
+                self.loser_blockchains.append(blockchain + deque([block]))
+        self.loser_blockchains.append(deque([block]))
+
     def resolve_block_conflict(self, block):
         """
         When we receive a block with a surprising parent ID, attempt to
-        resolve the conflict.
-        Todo: write good automated tests for all these situations.
+        resolve the conflict and choose the longest blockchain fork.
         """
+        # Form all possible new blockchains with the new block.
+        self.add_to_losers(block)
+        self.coalesce_loser_blockchains()
 
-        # Always add the block as its own singleton chain!
-        self.loser_blockchains.append(deque([block]))
-        
-        parent = self.find_block_by_id(block["previous_block"])
-        
-        def is_parent_of(block_one, block_two):
-            return block_two["previous_block"] == block_one["id"]
-
-        if parent is not None:
-            for blockchain in list(self.loser_blockchains):
-                start, *rest = blockchain
-                if is_parent_of(block, start):
-                    blockchain.appendleft(block)
-                    self.swap_if_longer(blockchain, parent)
-        else:
-            for blockchain in list(self.loser_blockchains):
-                start = blockchain[0]
-                end = blockchain[-1]
-                if is_parent_of(block, start):
-                    blockchain.appendleft(block)
-                elif is_parent_of(end, block):
-                    blockchain.append(block)
-                    fork_parent_id = start["previous_block"]
-                    fork_parent_index = self.find_block_by_id(fork_parent_id)
-                    if fork_parent_index:
-                        self.swap_if_longer(blockchain, fork_parent_index)
+        # Given our new consolidated chains, try adding them to the blockchain.
+        for blockchain in (b for b in self.loser_blockchains if len(b) > 1):
+            fork_parent_id = blockchain[0]["previous_block"]
+            fork_parent_index = self.find_block_by_id(fork_parent_id)
+            if fork_parent_index is not None:
+                self.swap_if_longer(blockchain, fork_parent_index)
 
     def find_block_by_id(self, block_id):
-        try:
-            return next(i for i, block in enumerate(self.blocks)
-                        if block["id"] == block_id)
-        except StopIteration:
-            return None
-                    
+        """
+        Return the index of the block with the given ID in our current blockchain,
+        or None if we can't find that block ID.
+        """
+        for index, block in enumerate(self.blocks):
+            if block["id"] == block_id:
+                return index
+        return None
+
     def swap_if_longer(self, blockchain, parent):
-        blocks_up_to_parent = self.blocks[:parent+1]
-        blocks_past_parent = self.blocks[parent+1:]
+        """
+        Given a candidate blockchain fork and the index of its parent,
+        determine whether switching to that fork would yield a longer
+        chain; then swap it out if so.
+        """
+        blocks_up_to_parent = self.blocks[: parent + 1]
+        blocks_past_parent = self.blocks[parent + 1 :]
         if len(blockchain) > len(blocks_past_parent):
             self.blocks = blocks_up_to_parent + list(blockchain)
             self.loser_blockchains.append(deque(blocks_past_parent))
