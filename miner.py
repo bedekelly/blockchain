@@ -179,6 +179,8 @@ class Miner(gossip.Peer):
     def consume_message(self, msg):
         """Be a good Peer and respond to messages."""
         if "transaction" in msg:
+            if isinstance(msg["transaction"], str):
+                breakpoint()
             self.handle_transaction_msg(msg["transaction"])
         elif "request_blockchain" in msg:
             return {"blocks": self.blocks}

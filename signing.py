@@ -1,10 +1,7 @@
-import ast
 import secrets
+
 from nacl import encoding, signing
-from nacl.exceptions import (
-    BadSignatureError,
-    ValueError as CryptoValueError
-)
+from nacl.exceptions import BadSignatureError, ValueError as CryptoValueError
 
 
 def generate_keypair():
@@ -32,9 +29,7 @@ def strip_key(d, key):
 
 def verify_transaction(transaction):
     try:
-        key = signing.VerifyKey(
-            transaction["from"], encoder=encoding.HexEncoder
-        )
+        key = signing.VerifyKey(transaction["from"], encoder=encoding.HexEncoder)
     except CryptoValueError:
         return False
 
@@ -46,13 +41,11 @@ def verify_transaction(transaction):
         return key.verify(encoded_transaction, signature)
     except BadSignatureError:
         return False
-    
 
 
 if __name__ == "__main__":
     key, verify_key_hex = generate_keypair()
-    transaction = { "amount": 1000, "to": "Bob",
-                    "from": verify_key_hex }
+    transaction = {"amount": 1000, "to": "Bob", "from": verify_key_hex}
     signed_transaction = sign_transaction(transaction, key)
     assert verify_transaction(signed_transaction)
     signed_transaction["amount"] += 100
