@@ -33,6 +33,7 @@ class Peer:
 
 class Server:
     def __init__(self, create_worker):
+        self.previously_sent_data = set()
         self.worker = None
         self.worker = create_worker(self.send_to_all, self.request_from_random)
         self.urls = set(self.load_initial_urls()) - {f"ws://{HOST}:{PORT}"}
@@ -48,7 +49,7 @@ class Server:
             await self.add_peer(data["peer"])
             msg = repr({"peers": list(self.urls)})
             if not already_had:
-                await self.propagate(data["peer"])
+                await self.propagate_peer(data["peer"])
             if "list_peers" in data:
                 await websocket.send(msg)
         elif "ping" in data:
@@ -58,11 +59,10 @@ class Server:
             if reply:
                 await websocket.send(repr(reply))
 
-    async def propagate(self, peer):
+    async def propagate_peer(self, peer):
         """Send this new peer to our other peers."""
         for url in list(self.urls):
             if peer != url:
-                log(f"Sending {peer} to {url}")
                 async with websockets.connect(url) as connection:
                     await connection.send(repr({"peer": peer}))
 
@@ -73,6 +73,10 @@ class Server:
                 async with websockets.connect(url) as connection:
                     await connection.send(repr(data))
             except ConnectionRefusedError:
+                log("Removing peer:", url)
+                self.urls.remove(url)
+            except websockets.exceptions.InvalidMessage:
+                log("Removing peer:", url)
                 self.urls.remove(url)
 
     async def add_peer(self, url):
@@ -85,7 +89,6 @@ class Server:
                 await connection.send(repr({"ping": True}))
                 data = ast.literal_eval(await connection.recv())
                 if "pong" in data:
-                    log("Added new peer:", url)
                     self.urls.add(url)
         except Exception as e:
             log(e)

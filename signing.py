@@ -32,6 +32,8 @@ def verify_transaction(transaction):
         key = signing.VerifyKey(transaction["from"], encoder=encoding.HexEncoder)
     except CryptoValueError:
         return False
+    except TypeError:
+        breakpoint()
 
     signature = transaction["signature"]
     unsigned_transaction = strip_key(transaction, "signature")

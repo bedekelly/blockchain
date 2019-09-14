@@ -18,8 +18,11 @@ UnspentTransaction = namedtuple("UnspentTransaction", "id amount address")
 
 
 def asyncio_run(fn):
-    """Run a function in the current asyncio event loop."""
     asyncio.get_event_loop().run_until_complete(fn)
+
+
+def asyncio_background(fn):
+    asyncio.ensure_future(fn)
 
 
 def short_hash(block):
@@ -88,6 +91,8 @@ class Miner(gossip.Peer):
         if self.validate_transaction(transaction):
             log("Received valid transaction:", transaction)
             self.current_transactions.append(transaction)
+            # Propagate it to our network
+            asyncio_background(self.send_to_all(transaction))
 
     def validate_block(self, block):
         return (
@@ -166,12 +171,13 @@ class Miner(gossip.Peer):
             self.update_unspent_transactions_with_block(block)
             self.new_block(block)
             self.got_new_block = True
-            # Todo: propagate valid blocks to peers.
+            # asyncio_background(self.send_to_all(block))
             log("Updated with new block.")
             self.print_chain()
 
-        elif self.hash_complete(block) and self.validate_transactions(block):
-
+        elif self.hash_complete(block) and self.validate_transactions(
+            block["transactions"]
+        ):
             # Note: this means only the previous block hash wasn't right;
             # it's still hashed correctly and each transaction is valid and signed.
             self.resolve_block_conflict(block)
@@ -179,8 +185,6 @@ class Miner(gossip.Peer):
     def consume_message(self, msg):
         """Be a good Peer and respond to messages."""
         if "transaction" in msg:
-            if isinstance(msg["transaction"], str):
-                breakpoint()
             self.handle_transaction_msg(msg["transaction"])
         elif "request_blockchain" in msg:
             return {"blocks": self.blocks}
