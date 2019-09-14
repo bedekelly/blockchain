@@ -17,6 +17,10 @@ log = gossip.log
 UnspentTransaction = namedtuple("UnspentTransaction", "id amount address")
 
 
+def add_hashes_to(blocks):
+    yield from map(lambda b: {**b, "hash": cryptographic_hash(b)}, blocks)
+
+
 def asyncio_run(fn):
     asyncio.get_event_loop().run_until_complete(fn)
 
@@ -27,7 +31,16 @@ def asyncio_background(fn):
 
 def short_hash(block):
     """Return the first few characters from a block's hash."""
-    return str(block["hash"])[:5]
+    hash_value = block.get("hash", cryptographic_hash(block))
+    return str(hash_value)[:5]
+
+
+def print_blockchain(blocks):
+    length = len(blocks)
+    short_hashes = map(short_hash, blocks[-5:])
+    printable_chain = "<-".join(short_hashes)
+    dots = "...<-" if length > 5 else ""
+    log(f"Chain(length={length}, {dots}{printable_chain})")
 
 
 def get_blockchain():
@@ -51,7 +64,7 @@ class Miner(gossip.Peer):
         self.current_transaction_fees = 0
         self.blocks = []
         self.loser_blockchains = []
-        self._difficulty = 20
+        self._difficulty = 15
         self.mining_reward = 1000
         self.got_new_block = False
         self.private_key, self.public_key = generate_keypair()
@@ -66,7 +79,7 @@ class Miner(gossip.Peer):
         blocks = response["blocks"]
         for block in blocks:
             self.update_unspent_transactions_with_block(block)
-        self.blocks = blocks
+            self.new_block(block)
         log("Updated blockchain.")
         self.print_chain()
 
@@ -97,7 +110,7 @@ class Miner(gossip.Peer):
     def validate_block(self, block):
         return (
             self.hash_complete(block)
-            and block["previous_block"] == self.previous_block_hash
+            and block["previous_block_hash"] == self.previous_block_hash
             and self.validate_transactions(block["transactions"])
         )
 
@@ -129,7 +142,15 @@ class Miner(gossip.Peer):
         """
         # Form all possible new blockchains with the new block.
         self.add_to_losers(block)
+        log(
+            f"Conflicting block: {short_hash(block)}, "
+            f"parent={str(block['previous_block_hash'])[:5]}"
+        )
         self.coalesce_loser_blockchains()
+
+        longest_loser_length = max(len(x) for x in self.loser_blockchains)
+        if longest_loser_length > 2:
+            pass
 
         # Given our new consolidated chains, try adding them to the blockchain.
         for blockchain in (b for b in self.loser_blockchains if len(b) > 1):
@@ -157,7 +178,7 @@ class Miner(gossip.Peer):
         blocks_up_to_parent = self.blocks[: parent + 1]
         blocks_past_parent = self.blocks[parent + 1 :]
         if len(blockchain) > len(blocks_past_parent):
-            self.blocks = blocks_up_to_parent + list(blockchain)
+            self.blocks = blocks_up_to_parent + list(add_hashes_to(blockchain))
             self.loser_blockchains.append(deque(blocks_past_parent))
             self.loser_blockchains.remove(blockchain)
 
@@ -196,11 +217,7 @@ class Miner(gossip.Peer):
 
     def print_chain(self):
         """Print out a minified chain of block hashes."""
-        length = len(self.blocks)
-        short_hashes = map(short_hash, self.blocks[-5:])
-        printable_chain = "<-".join(short_hashes)
-        dots = "...<-" if length > 5 else ""
-        log(f"Chain(length={length}, {dots}{printable_chain})")
+        return print_blockchain(self.blocks)
 
     def unspent(self):
         return repr(self.unspent_transactions)
@@ -341,6 +358,12 @@ class Miner(gossip.Peer):
     def validate_transactions(self, transactions):
         return all(self.validate_transaction(t) for t in transactions)
 
+    @property
+    def previous_block_id(self):
+        if self.blocks:
+            return self.blocks[-1]["id"]
+        return 0
+
     def mine_one_block(self):
         # Note: each sub-key needs to be hashable.
         fees = self.current_transaction_fees
@@ -349,7 +372,8 @@ class Miner(gossip.Peer):
             "transactions": (),
             "mine": (str(uuid()), self.mining_reward + fees, self.address),
             "timestamp": int(time.time()),
-            "previous_block": self.previous_block_hash,
+            "previous_block": self.previous_block_id,
+            "previous_block_hash": self.previous_block_hash,
             "nonce": 0,
         }
 
